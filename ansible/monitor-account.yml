@@ -7,33 +7,36 @@
 
 - name: Get running instances
   amazon.aws.ec2_instance_info:
-    aws_access_key: "{{ creds.sts_creds.access_key }}"
-    aws_secret_key: "{{ creds.sts_creds.secret_key }}"
-    aws_session_token: "{{ creds.sts_creds.session_token }}"
     region: "{{ aws_region }}"
     filters:
       instance-state-name: running
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ creds.sts_creds.access_key }}"
+    AWS_SECRET_ACCESS_KEY: "{{ creds.sts_creds.secret_key }}"
+    AWS_SESSION_TOKEN: "{{ creds.sts_creds.session_token }}"
   register: instances
 
 - name: Get disk usage via SSM
   amazon.aws.ssm_command:
-    aws_access_key: "{{ creds.sts_creds.access_key }}"
-    aws_secret_key: "{{ creds.sts_creds.secret_key }}"
-    aws_session_token: "{{ creds.sts_creds.session_token }}"
     instance_ids: "{{ instances.instances | map(attribute='instance_id') | list }}"
     document_name: "AWS-RunShellScript"
     parameters:
       commands: ["df -h | grep -E '^/dev/' | head -1 | awk '{print $2,$3,$4,$5}'"]
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ creds.sts_creds.access_key }}"
+    AWS_SECRET_ACCESS_KEY: "{{ creds.sts_creds.secret_key }}"
+    AWS_SESSION_TOKEN: "{{ creds.sts_creds.session_token }}"
   register: disk_cmd
   when: instances.instances | length > 0
 
 - name: Wait for command completion
   amazon.aws.ssm_command_info:
-    aws_access_key: "{{ creds.sts_creds.access_key }}"
-    aws_secret_key: "{{ creds.sts_creds.secret_key }}"
-    aws_session_token: "{{ creds.sts_creds.session_token }}"
     command_id: "{{ disk_cmd.command.command_id }}"
     instance_id: "{{ item }}"
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ creds.sts_creds.access_key }}"
+    AWS_SECRET_ACCESS_KEY: "{{ creds.sts_creds.secret_key }}"
+    AWS_SESSION_TOKEN: "{{ creds.sts_creds.session_token }}"
   register: disk_results
   loop: "{{ instances.instances | map(attribute='instance_id') | list }}"
   retries: 5
