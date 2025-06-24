@@ -33,6 +33,7 @@ This solution uses a hub-and-spoke architecture to monitor disk utilization acro
 
 ```
 ansible-aws-monitoring/
+├── Architecture.png              # Architectural Diagram 
 ├── ansible/                      # Ansible configuration
 │   ├── config.yml                # Target accounts and settings
 │   ├── monitor.yml               # Main monitoring playbook
@@ -72,24 +73,6 @@ ansible-aws-monitoring/
   - Cron job configuration
   - Verification steps
 
-- **architecture-diagram.drawio**: Editable Draw.io diagram showing:
-  - Master and child account components
-  - Cross-account connections
-  - Data flow between components
-  - CloudFormation deployment relationships
-
-- **data-flow-diagram.drawio**: Editable Draw.io sequence diagram showing:
-  - Step-by-step monitoring process
-  - Cross-account role assumption
-  - SSM command execution
-  - Data processing and storage flow
-
-- **well-architected-diagram.drawio**: Comprehensive AWS Well-Architected Framework diagram showing:
-  - All five pillars: Operational Excellence, Security, Reliability, Performance Efficiency, Cost Optimization
-  - Enhanced security features (private subnets, least privilege IAM, encryption)
-  - Reliability improvements (Auto Scaling, Multi-AZ)
-  - Performance optimizations (data partitioning, parallel processing)
-  - Cost optimization strategies (right-sizing, lifecycle policies)
 
 ## Detailed Setup Instructions
 
