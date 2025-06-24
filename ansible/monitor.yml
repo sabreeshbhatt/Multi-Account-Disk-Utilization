@@ -1,0 +1,94 @@
+---
+- name: AWS Disk Utilization Monitoring
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - config.yml
+  vars:
+    date_partition: "{{ ansible_date_time.date }}"
+    hour_partition: "{{ ansible_date_time.hour }}"
+  
+  tasks:
+    - name: Create reports directory
+      file:
+        path: reports
+        state: directory
+
+    - name: Monitor each account
+      include_tasks: monitor-account.yml
+      loop: "{{ target_accounts }}"
+      loop_control:
+        loop_var: account_id
+
+    - name: Create disk utilization CSV
+      copy:
+        content: |
+          account_id,instance_id,disk_usage_percent,total_space,available_space,disk_status,collection_date,collection_hour
+          {% for result in account_results | default([]) %}
+          {% for instance in result.instances %}
+          {{ result.account }},{{ instance.instance_id }},{{ instance.disk_usage }},{{ instance.total_space }},{{ instance.available_space }},{{ instance.status }},{{ date_partition }},{{ hour_partition }}
+          {% endfor %}
+          {% endfor %}
+        dest: "reports/disk_utilization_{{ date_partition }}_{{ hour_partition }}.csv"
+
+    - name: Upload to S3 with partitioning
+      amazon.aws.s3_object:
+        bucket: "{{ bucket_name }}"
+        object: "data/year={{ ansible_date_time.year }}/month={{ ansible_date_time.month }}/day={{ ansible_date_time.day }}/hour={{ hour_partition }}/disk_utilization.csv"
+        src: "reports/disk_utilization_{{ date_partition }}_{{ hour_partition }}.csv"
+        mode: put
+
+    - name: Create summary CSV
+      copy:
+        content: |
+          account_id,total_instances,critical_instances,warning_instances,ok_instances,collection_date,collection_hour
+          {% for result in account_results | default([]) %}
+          {% set critical = result.instances | selectattr('status', 'equalto', 'CRITICAL') | list | length %}
+          {% set warning = result.instances | selectattr('status', 'equalto', 'WARNING') | list | length %}
+          {% set ok = result.instances | selectattr('status', 'equalto', 'OK') | list | length %}
+          {{ result.account }},{{ result.instances | length }},{{ critical }},{{ warning }},{{ ok }},{{ date_partition }},{{ hour_partition }}
+          {% endfor %}
+        dest: "reports/summary_{{ date_partition }}_{{ hour_partition }}.csv"
+
+    - name: Upload summary to S3
+      amazon.aws.s3_object:
+        bucket: "{{ bucket_name }}"
+        object: "summary/year={{ ansible_date_time.year }}/month={{ ansible_date_time.month }}/day={{ ansible_date_time.day }}/hour={{ hour_partition }}/summary.csv"
+        src: "reports/summary_{{ date_partition }}_{{ hour_partition }}.csv"
+        mode: put
+
+    - name: Create QuickSight manifest
+      copy:
+        content: |
+          {
+            "fileLocations": [
+              {
+                "URIPrefixes": [
+                  "s3://{{ bucket_name }}/data/",
+                  "s3://{{ bucket_name }}/summary/"
+                ]
+              }
+            ],
+            "globalUploadSettings": {
+              "format": "CSV",
+              "delimiter": ",",
+              "textqualifier": "\"",
+              "containsHeader": "true"
+            }
+          }
+        dest: "reports/quicksight-manifest.json"
+
+    - name: Upload QuickSight manifest
+      amazon.aws.s3_object:
+        bucket: "{{ bucket_name }}"
+        object: "quicksight-manifest.json"
+        src: "reports/quicksight-manifest.json"
+        mode: put
+
+    - name: Display summary
+      debug:
+        msg: |
+          Disk monitoring complete:
+          - Total accounts: {{ target_accounts | length }}
+          - Total instances: {{ account_results | map(attribute='instances') | map('length') | sum }}
+          - Data uploaded to: s3://{{ bucket_name }}/

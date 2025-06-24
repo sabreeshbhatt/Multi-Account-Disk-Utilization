@@ -1,0 +1,8 @@
+# Disk Monitoring Configuration
+target_accounts:
+  - "222222222222"
+  - "333333333333"
+
+role_name: "DiskMonitoringRole"
+aws_region: "us-east-1"
+bucket_name: "{{ ansible_env.BUCKET_NAME }}"

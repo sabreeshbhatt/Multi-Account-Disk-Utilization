@@ -1,0 +1,74 @@
+---
+- name: Assume role in {{ account_id }}
+  amazon.aws.sts_assume_role:
+    role_arn: "arn:aws:iam::{{ account_id }}:role/{{ role_name }}"
+    role_session_name: "monitoring"
+  register: creds
+
+- name: Get running instances
+  amazon.aws.ec2_instance_info:
+    aws_access_key: "{{ creds.sts_creds.access_key }}"
+    aws_secret_key: "{{ creds.sts_creds.secret_key }}"
+    aws_session_token: "{{ creds.sts_creds.session_token }}"
+    region: "{{ aws_region }}"
+    filters:
+      instance-state-name: running
+  register: instances
+
+- name: Get disk usage via SSM
+  amazon.aws.ssm_command:
+    aws_access_key: "{{ creds.sts_creds.access_key }}"
+    aws_secret_key: "{{ creds.sts_creds.secret_key }}"
+    aws_session_token: "{{ creds.sts_creds.session_token }}"
+    instance_ids: "{{ instances.instances | map(attribute='instance_id') | list }}"
+    document_name: "AWS-RunShellScript"
+    parameters:
+      commands: ["df -h | grep -E '^/dev/' | head -1 | awk '{print $2,$3,$4,$5}'"]
+  register: disk_cmd
+  when: instances.instances | length > 0
+
+- name: Wait for command completion
+  amazon.aws.ssm_command_info:
+    aws_access_key: "{{ creds.sts_creds.access_key }}"
+    aws_secret_key: "{{ creds.sts_creds.secret_key }}"
+    aws_session_token: "{{ creds.sts_creds.session_token }}"
+    command_id: "{{ disk_cmd.command.command_id }}"
+    instance_id: "{{ item }}"
+  register: disk_results
+  loop: "{{ instances.instances | map(attribute='instance_id') | list }}"
+  retries: 5
+  delay: 2
+  until: disk_results.invocations[0].status == 'Success'
+  when: instances.instances | length > 0
+
+- name: Process disk data
+  set_fact:
+    account_results: "{{ account_results | default([]) + [{
+      'account': account_id,
+      'instances': processed_instances
+    }] }}"
+  vars:
+    processed_instances: |
+      {%- set result = [] -%}
+      {%- for instance in instances.instances -%}
+        {%- set disk_data = 'N/A,N/A,N/A,0%' -%}
+        {%- if disk_results is defined -%}
+          {%- for cmd_result in disk_results.results -%}
+            {%- if cmd_result.invocations[0].instance_id == instance.instance_id -%}
+              {%- set disk_data = cmd_result.invocations[0].stdout.strip() -%}
+            {%- endif -%}
+          {%- endfor -%}
+        {%- endif -%}
+        {%- set disk_parts = disk_data.split() -%}
+        {%- set usage_pct = disk_parts[3] | default('0%') -%}
+        {%- set usage_num = usage_pct.replace('%', '') | int if usage_pct != 'N/A' else 0 -%}
+        {%- set status = 'CRITICAL' if usage_num > 90 else ('WARNING' if usage_num > 80 else 'OK') -%}
+        {%- set _ = result.append({
+          'instance_id': instance.instance_id,
+          'disk_usage': usage_pct,
+          'total_space': disk_parts[0] | default('N/A'),
+          'available_space': disk_parts[2] | default('N/A'),
+          'status': status
+        }) -%}
+      {%- endfor -%}
+      {{ result }}

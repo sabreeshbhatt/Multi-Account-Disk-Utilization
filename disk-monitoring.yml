@@ -1,0 +1,198 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Complete disk utilization monitoring solution
+
+Parameters:
+  CentralAccountId:
+    Type: String
+    Description: Master account ID
+    Default: '111111111111'
+
+  TargetAccounts:
+    Type: CommaDelimitedList
+    Description: Child account IDs to monitor
+    Default: 222222222222,333333333333
+
+Conditions:
+  IsMasterAccount: !Equals
+    - !Ref AWS::AccountId
+    - !Ref CentralAccountId
+
+Resources:
+  # Cross-account monitoring role (all accounts)
+  MonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: DiskMonitoringRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${CentralAccountId}:root
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DiskMonitoringPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ssm:SendCommand
+                  - ssm:GetCommandInvocation
+                Resource: '*'
+
+  # Master account resources
+  MonitoringInstanceRole:
+    Type: AWS::IAM::Role
+    Condition: IsMasterAccount
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CrossAccountAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub arn:aws:iam::*:role/DiskMonitoringRole
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub ${MonitoringBucket}
+                  - !Sub ${MonitoringBucket}/*
+              - Effect: Allow
+                Action:
+                  - quicksight:CreateDataSource
+                  - quicksight:CreateDataSet
+                  - quicksight:UpdateDataSource
+                  - quicksight:UpdateDataSet
+                  - quicksight:DescribeDataSource
+                  - quicksight:DescribeDataSet
+                Resource: '*'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Condition: IsMasterAccount
+    Properties:
+      Roles:
+        - !Ref MonitoringInstanceRole
+
+  MonitoringBucket:
+    Type: AWS::S3::Bucket
+    Condition: IsMasterAccount
+    Properties:
+      BucketName: !Sub disk-monitoring-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  MonitoringInstance:
+    Type: AWS::EC2::Instance
+    Condition: IsMasterAccount
+    Properties:
+      ImageId: ami-0c02fb55956c7d316
+      InstanceType: t3.micro
+      IamInstanceProfile: !Ref InstanceProfile
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          yum update -y
+          yum install -y python3 python3-pip git amazon-ssm-agent
+          pip3 install ansible boto3 botocore
+          ansible-galaxy collection install amazon.aws
+          
+          mkdir -p /opt/aws-monitoring
+          echo "BUCKET_NAME=disk-monitoring-${AWS::AccountId}" > /opt/aws-monitoring/.env
+          
+          systemctl enable amazon-ssm-agent
+          systemctl start amazon-ssm-agent
+
+  # QuickSight Data Source
+  QuickSightDataSource:
+    Type: AWS::QuickSight::DataSource
+    Condition: IsMasterAccount
+    Properties:
+      AwsAccountId: !Ref AWS::AccountId
+      DataSourceId: disk-monitoring-datasource
+      Name: Disk Monitoring Data Source
+      Type: S3
+      DataSourceParameters:
+        S3Parameters:
+          ManifestFileLocation:
+            Bucket: !Ref MonitoringBucket
+            Key: quicksight-manifest.json
+      Permissions:
+        - Principal: !Sub arn:aws:quicksight:${AWS::Region}:${AWS::AccountId}:user/default/${AWS::AccountId}
+          Actions:
+            - quicksight:DescribeDataSource
+            - quicksight:DescribeDataSourcePermissions
+            - quicksight:PassDataSource
+
+  # QuickSight Dataset
+  QuickSightDataSet:
+    Type: AWS::QuickSight::DataSet
+    Condition: IsMasterAccount
+    DependsOn: QuickSightDataSource
+    Properties:
+      AwsAccountId: !Ref AWS::AccountId
+      DataSetId: disk-monitoring-dataset
+      Name: Disk Monitoring Dataset
+      ImportMode: SPICE
+      PhysicalTableMap:
+        DiskData:
+          S3Source:
+            DataSourceArn: !GetAtt QuickSightDataSource.Arn
+            InputColumns:
+              - Name: account_id
+                Type: STRING
+              - Name: instance_id
+                Type: STRING
+              - Name: disk_usage_percent
+                Type: STRING
+              - Name: total_space
+                Type: STRING
+              - Name: available_space
+                Type: STRING
+              - Name: disk_status
+                Type: STRING
+              - Name: collection_date
+                Type: STRING
+      Permissions:
+        - Principal: !Sub arn:aws:quicksight:${AWS::Region}:${AWS::AccountId}:user/default/${AWS::AccountId}
+          Actions:
+            - quicksight:DescribeDataSet
+            - quicksight:DescribeDataSetPermissions
+            - quicksight:PassDataSet
+            - quicksight:DescribeIngestion
+            - quicksight:ListIngestions
+
+Outputs:
+  MonitoringBucket:
+    Condition: IsMasterAccount
+    Value: !Ref MonitoringBucket
+
+  InstanceId:
+    Condition: IsMasterAccount
+    Value: !Ref MonitoringInstance
+
+  QuickSightDataSource:
+    Condition: IsMasterAccount
+    Value: !Ref QuickSightDataSource
+
+  QuickSightDataSet:
+    Condition: IsMasterAccount
+    Value: !Ref QuickSightDataSet
